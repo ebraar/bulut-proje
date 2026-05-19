@@ -49,8 +49,9 @@ validation_dataset = validation_dataset.prefetch(buffer_size=AUTOTUNE)
 # Data augmentation
 data_augmentation = tf.keras.Sequential([
     layers.RandomFlip("horizontal"),
-    layers.RandomRotation(0.2),
-    layers.RandomZoom(0.2),
+    layers.RandomRotation(0.15),
+    layers.RandomZoom(0.15),
+    layers.RandomContrast(0.1),
 ])
 
 # Önceden eğitilmiş MobileNetV2 modeli
@@ -60,7 +61,7 @@ base_model = MobileNetV2(
     weights="imagenet"
 )
 
-# Transfer learning: temel modeli donduruyoruz
+# İlk aşama: temel modeli dondur
 base_model.trainable = False
 
 # Model oluşturma
@@ -69,30 +70,63 @@ model = models.Sequential([
     layers.Rescaling(1. / 127.5, offset=-1),
     base_model,
     layers.GlobalAveragePooling2D(),
+    layers.Dropout(0.3),
+    layers.Dense(128, activation="relu"),
     layers.Dropout(0.2),
     layers.Dense(len(class_names), activation="softmax")
 ])
 
-# Model derleme
+# İlk eğitim derleme
 model.compile(
-    optimizer="adam",
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
     loss="sparse_categorical_crossentropy",
     metrics=["accuracy"]
 )
 
-# Early stopping
 early_stopping = EarlyStopping(
     monitor="val_loss",
     patience=3,
     restore_best_weights=True
 )
 
-# Eğitim
-history = model.fit(
+# 1. Aşama: sadece son katmanları eğit
+history_initial = model.fit(
+    train_dataset,
+    validation_data=validation_dataset,
+    epochs=8,
+    callbacks=[early_stopping]
+)
+
+# 2. Aşama: fine-tuning
+base_model.trainable = True
+
+# MobileNetV2'nin çoğu katmanını dondur, sadece son 30 katmanı eğit
+for layer in base_model.layers[:-30]:
+    layer.trainable = False
+
+# BatchNormalization katmanlarını sabit bırakmak daha stabil sonuç verir
+for layer in base_model.layers:
+    if isinstance(layer, layers.BatchNormalization):
+        layer.trainable = False
+
+# Fine-tuning için düşük learning rate
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.00001),
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"]
+)
+
+fine_tune_early_stopping = EarlyStopping(
+    monitor="val_loss",
+    patience=4,
+    restore_best_weights=True
+)
+
+history_fine = model.fit(
     train_dataset,
     validation_data=validation_dataset,
     epochs=10,
-    callbacks=[early_stopping]
+    callbacks=[fine_tune_early_stopping]
 )
 
 # Models klasörü oluştur
@@ -103,13 +137,23 @@ model.save("models/flower_model.keras")
 print("Model kaydedildi: models/flower_model.keras")
 
 
-# Accuracy grafiği
-acc = history.history["accuracy"]
-val_acc = history.history["val_accuracy"]
+# Accuracy verilerini birleştir
+acc = history_initial.history["accuracy"] + history_fine.history["accuracy"]
+val_acc = history_initial.history["val_accuracy"] + history_fine.history["val_accuracy"]
 
+# Loss verilerini birleştir
+loss = history_initial.history["loss"] + history_fine.history["loss"]
+val_loss = history_initial.history["val_loss"] + history_fine.history["val_loss"]
+
+# Accuracy grafiği
 plt.figure(figsize=(8, 6))
 plt.plot(acc, label="Training Accuracy")
 plt.plot(val_acc, label="Validation Accuracy")
+plt.axvline(
+    x=len(history_initial.history["accuracy"]) - 1,
+    linestyle="--",
+    label="Fine-tuning Start"
+)
 plt.legend()
 plt.title("Accuracy Graph")
 plt.xlabel("Epoch")
@@ -117,14 +161,15 @@ plt.ylabel("Accuracy")
 plt.savefig("models/accuracy_graph.png")
 plt.show()
 
-
 # Loss grafiği
-loss = history.history["loss"]
-val_loss = history.history["val_loss"]
-
 plt.figure(figsize=(8, 6))
 plt.plot(loss, label="Training Loss")
 plt.plot(val_loss, label="Validation Loss")
+plt.axvline(
+    x=len(history_initial.history["loss"]) - 1,
+    linestyle="--",
+    label="Fine-tuning Start"
+)
 plt.legend()
 plt.title("Loss Graph")
 plt.xlabel("Epoch")
