@@ -11,8 +11,8 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Model yükleme
-model = tf.keras.models.load_model("models/flower_model.keras")
+# Lazy loading için model başlangıçta None
+model = None
 
 # Sınıf isimleri
 class_names = [
@@ -37,6 +37,12 @@ def home():
 # Görsel sınıflandırma endpointi
 @app.route("/classify", methods=["POST"])
 def classify_image():
+
+    global model
+
+    # Model ilk istek geldiğinde yüklenecek
+    if model is None:
+        model = tf.keras.models.load_model("models/flower_model.keras")
 
     # Dosya kontrolü
     if "file" not in request.files:
